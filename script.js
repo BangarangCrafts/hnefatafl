@@ -1,6 +1,7 @@
 // ============================================================
-//  Hnefatafl – Optimized rendering (no DOM rebuild on each move)
-//  Uses event delegation and updates cells in place.
+//  Hnefatafl – Complete Game with Coin Flip & AI for both sides
+//  AI can play as Defenders or Attackers.
+//  Coin flip is smooth, realistic, and truly 50/50.
 // ============================================================
 
 const SIZE = 11;
@@ -52,9 +53,6 @@ const coinOverlay = document.getElementById('coin-overlay');
 const coinEl = document.getElementById('coin');
 const coinResultEl = document.getElementById('coin-result');
 
-// ---- Persistent cell references ----
-let cells = [];
-
 // ------------------------------------------------------------------
 //  Menu handling
 // ------------------------------------------------------------------
@@ -78,12 +76,15 @@ function flipCoin(callback) {
     coinResultEl.style.opacity = '1';
     coinResultEl.style.textShadow = '0 2px 8px rgba(0,0,0,0.8)';
 
+    // Reset coin to starting position
     coinEl.classList.remove('flipping');
     coinEl.style.transform = 'rotateY(0deg)';
     coinEl.style.transition = 'none';
 
+    // Force reflow
     void coinEl.offsetHeight;
 
+    // ---- Generate truly random result ----
     const randomBytes = new Uint8Array(1);
     crypto.getRandomValues(randomBytes);
     const result = randomBytes[0] < 128 ? 0 : 1;
@@ -92,11 +93,16 @@ function flipCoin(callback) {
     const sideText = result === 0 ? 'Defenders' : 'Attackers';
     const emoji = result === 0 ? '🛡️' : '⚔️';
 
+    // ---- Start flip animation ----
     coinEl.style.transition = 'transform 1.4s cubic-bezier(0.15, 0.85, 0.35, 1)';
+
+    // Total rotation: 3 full spins + final angle
     const totalRotation = 3 * 360 + finalAngle;
     coinEl.style.transform = `rotateY(${totalRotation}deg)`;
 
+    // ---- Show result after animation ----
     setTimeout(() => {
+        // Ensure final position is exact
         coinEl.style.transition = 'transform 0.1s ease';
         coinEl.style.transform = `rotateY(${finalAngle}deg)`;
 
@@ -169,6 +175,7 @@ function initBoard() {
     ];
     for (const [r, c] of defenderPositions) board[r][c] = DEFENDER;
 
+    // Attackers: (0,3-7) + (1,5) per side
     for (let c = 3; c <= 7; c++) board[0][c] = ATTACKER;
     board[1][5] = ATTACKER;
     for (let c = 3; c <= 7; c++) board[10][c] = ATTACKER;
@@ -180,13 +187,11 @@ function initBoard() {
 }
 
 // ------------------------------------------------------------------
-//  Build persistent DOM cells (called once at startup)
+//  Rendering
 // ------------------------------------------------------------------
-function buildBoardCells() {
+function renderBoard() {
     boardEl.innerHTML = '';
-    cells = [];
     for (let r = 0; r < SIZE; r++) {
-        cells[r] = [];
         for (let c = 0; c < SIZE; c++) {
             const cell = document.createElement('div');
             cell.className = 'cell';
@@ -201,45 +206,26 @@ function buildBoardCells() {
             label.textContent = `${r},${c}`;
             cell.appendChild(label);
 
-            // Placeholder for piece image
-            const img = document.createElement('img');
-            img.className = 'piece-img';
-            img.style.display = 'none'; // hidden by default
-            cell.appendChild(img);
-
-            cells[r][c] = cell;
-            boardEl.appendChild(cell);
-        }
-    }
-}
-
-// ------------------------------------------------------------------
-//  Optimized rendering – updates only what changed
-// ------------------------------------------------------------------
-function renderBoard() {
-    for (let r = 0; r < SIZE; r++) {
-        for (let c = 0; c < SIZE; c++) {
-            const cell = cells[r][c];
             const piece = board[r][c];
-            const img = cell.querySelector('.piece-img');
-
-            // Update piece image
             if (piece) {
+                const img = document.createElement('img');
+                img.className = 'piece-img';
                 let src = '';
                 if (piece === KING) src = 'king.png';
                 else if (piece === DEFENDER) src = 'defenders.png';
                 else if (piece === ATTACKER) src = 'attackers.png';
                 img.src = src;
-                img.style.display = 'block';
                 img.alt = piece;
-            } else {
-                img.style.display = 'none';
-                img.src = '';
+                cell.appendChild(img);
             }
 
-            // Update selected / selectable classes
-            cell.classList.toggle('selected', selectedRow === r && selectedCol === c);
-            cell.classList.toggle('selectable', legalMovesForSelected.some(([mr, mc]) => mr === r && mc === c));
+            if (selectedRow === r && selectedCol === c) cell.classList.add('selected');
+            if (legalMovesForSelected.some(([mr, mc]) => mr === r && mc === c)) {
+                cell.classList.add('selectable');
+            }
+
+            cell.addEventListener('click', () => onCellClick(r, c));
+            boardEl.appendChild(cell);
         }
     }
 }
@@ -438,12 +424,12 @@ function isKingCapturedState(boardState) {
 }
 
 // ------------------------------------------------------------------
-//  Animation (unchanged – uses floating element)
+//  Animation
 // ------------------------------------------------------------------
 function animateMove(fromRow, fromCol, toRow, toCol, pieceType, callback) {
     const boardRect = boardEl.getBoundingClientRect();
-    const fromCell = cells[fromRow][fromCol];
-    const toCell = cells[toRow][toCol];
+    const fromCell = document.querySelector(`.cell[data-row="${fromRow}"][data-col="${fromCol}"]`);
+    const toCell = document.querySelector(`.cell[data-row="${toRow}"][data-col="${toCol}"]`);
     if (!fromCell || !toCell) { callback(); return; }
     const fromRect = fromCell.getBoundingClientRect();
     const toRect = toCell.getBoundingClientRect();
@@ -484,17 +470,6 @@ function animateMove(fromRow, fromCol, toRow, toCol, pieceType, callback) {
 }
 
 // ------------------------------------------------------------------
-//  Event delegation: single click listener on boardEl
-// ------------------------------------------------------------------
-boardEl.addEventListener('click', (e) => {
-    const cell = e.target.closest('.cell');
-    if (!cell) return;
-    const row = parseInt(cell.dataset.row);
-    const col = parseInt(cell.dataset.col);
-    onCellClick(row, col);
-});
-
-// ------------------------------------------------------------------
 //  Core move
 // ------------------------------------------------------------------
 function performMove(fromRow, fromCol, toRow, toCol) {
@@ -519,6 +494,7 @@ function performMove(fromRow, fromCol, toRow, toCol) {
     animateMove(fromRow, fromCol, toRow, toCol, piece, () => {
         isAnimating = false;
         if (gameOver) {
+            // ---- SHOW WIN OVERLAY ----
             const winTitle = document.getElementById('win-title');
             const winMessage = document.getElementById('win-message');
             const winOverlay = document.getElementById('win-overlay');
@@ -551,6 +527,7 @@ function performMove(fromRow, fromCol, toRow, toCol) {
                 return;
             }
         } else {
+            // ---- HUMAN MODE: use "Defenders" and "Attackers" ----
             if (currentTurn === 'player') {
                 updateStatus('Player 1\'s turn (Defenders)');
             } else {
@@ -563,20 +540,377 @@ function performMove(fromRow, fromCol, toRow, toCol) {
 }
 
 // ------------------------------------------------------------------
-//  AI Evaluation (unchanged – keep your existing AI code)
+//  AI Evaluation for both sides
 // ------------------------------------------------------------------
-// [All your AI functions – isCornerBlocked, evaluateAttackerMove, evaluateDefenderMove, etc. – remain exactly as they were]
-// I'll omit them here for brevity, but they stay in your file.
 
-// ------------------------------------------------------------------
-//  Computer move dispatcher (unchanged)
-// ------------------------------------------------------------------
-function computerMove() {
-    // ... your existing computerMove function ...
+// ---------- Attacker AI ----------
+function isCornerBlocked(cornerIndex) {
+    const pattern = BARRICADE_PATTERNS[cornerIndex];
+    if (!pattern) return false;
+    for (const [r, c] of pattern) {
+        if (!isOnBoard(r, c) || board[r][c] !== ATTACKER) return false;
+    }
+    return true;
+}
+
+function countBlockedCorners() {
+    let count = 0;
+    for (let i = 0; i < 4; i++) if (isCornerBlocked(i)) count++;
+    return count;
+}
+
+function getNearestBarricadeSquare(kingRow, kingCol) {
+    let bestScore = -Infinity, bestSquare = null;
+    let predictedIdx = -1;
+    if (predictedCorner) predictedIdx = getCornerIndex(predictedCorner[0], predictedCorner[1]);
+    for (let ci = 0; ci < BARRICADE_PATTERNS.length; ci++) {
+        const pattern = BARRICADE_PATTERNS[ci];
+        let filled = 0, emptySquares = [];
+        for (const [r, c] of pattern) {
+            if (board[r][c] === ATTACKER) filled++;
+            else if (board[r][c] === EMPTY) emptySquares.push([r, c]);
+        }
+        if (filled === 3) continue;
+        const corner = CORNERS[ci];
+        const kingDist = Math.abs(kingRow - corner[0]) + Math.abs(kingCol - corner[1]);
+        const fillScore = filled * 100;
+        let predictionBonus = 0;
+        if (ci === predictedIdx && kingLeftThrone) {
+            predictionBonus = 300;
+            if (kingDist <= 4) predictionBonus += 200;
+            if (kingDist <= 2) predictionBonus += 300;
+        }
+        let edgeEmergency = 0;
+        if (isEdge(kingRow, kingCol)) {
+            const distToCorner = Math.abs(kingRow - corner[0]) + Math.abs(kingCol - corner[1]);
+            if (distToCorner <= 3) edgeEmergency = 800 - distToCorner * 100;
+        }
+        const proximityScore = Math.max(0, 50 - kingDist * 2);
+        for (const [r, c] of emptySquares) {
+            let totalScore = fillScore + proximityScore + predictionBonus + edgeEmergency + (Math.random() * 5);
+            if (!isAdjacentToCorner(r, c)) totalScore += 30;
+            else if (kingDist <= 3) totalScore -= 80;
+            if (totalScore > bestScore) { bestScore = totalScore; bestSquare = [r, c]; }
+        }
+    }
+    return bestSquare;
+}
+
+function isDirectEdgeBlocker(row, col, kingRow, kingCol) {
+    if (!isEdge(kingRow, kingCol) || !isEdge(row, col)) return false;
+    if (Math.abs(row - kingRow) + Math.abs(col - kingCol) !== 1) return false;
+    if (kingRow === 0) {
+        if (kingCol < 5) return col < kingCol && col >= 0;
+        else return col > kingCol && col <= 10;
+    } else if (kingRow === 10) {
+        if (kingCol < 5) return col < kingCol && col >= 0;
+        else return col > kingCol && col <= 10;
+    } else if (kingCol === 0) {
+        if (kingRow < 5) return row < kingRow && row >= 0;
+        else return row > kingRow && row <= 10;
+    } else if (kingCol === 10) {
+        if (kingRow < 5) return row < kingRow && row >= 0;
+        else return row > kingRow && row <= 10;
+    }
+    return false;
+}
+
+function countKingSidesOccupied(boardState) {
+    let kr = -1, kc = -1;
+    for (let r=0; r<SIZE; r++) for (let c=0; c<SIZE; c++) {
+        if (boardState[r][c] === KING) { kr=r; kc=c; break; }
+    }
+    if (kr === -1) return 4;
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+    let occupied = 0;
+    for (const [dr, dc] of dirs) {
+        const nr = kr+dr, nc = kc+dc;
+        if (!isOnBoard(nr, nc)) continue;
+        if (isThrone(nr, nc)) continue;
+        if (boardState[nr][nc] === ATTACKER) occupied++;
+    }
+    return occupied;
+}
+
+function evaluateAttackerMove(move, kingRow, kingCol) {
+    const simBoard = board.map(row => [...row]);
+    const piece = simBoard[move.fromRow][move.fromCol];
+    simBoard[move.toRow][move.toCol] = piece;
+    simBoard[move.fromRow][move.fromCol] = EMPTY;
+    let score = 0;
+    const phase = moveCount < 10 ? 'early' : (moveCount < 25 ? 'mid' : 'late');
+
+    if (isKingCapturedState(simBoard)) return 10000;
+
+    const sidesAfter = countKingSidesOccupied(simBoard);
+    const sidesBefore = countKingSidesOccupied(board);
+    if (sidesAfter > sidesBefore) {
+        score += (sidesAfter - sidesBefore) * 1000;
+        if (sidesAfter === 3) score += 5000;
+    }
+    if (phase === 'late' && Math.abs(move.toRow - kingRow) + Math.abs(move.toCol - kingCol) === 1) score += 300;
+    if (Math.abs(move.fromRow - kingRow) + Math.abs(move.fromCol - kingCol) === 1 && piece === ATTACKER) score -= 200;
+
+    let captures = 0;
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+    for (const [dr, dc] of dirs) {
+        const r1 = move.toRow+dr, c1 = move.toCol+dc;
+        if (!isOnBoard(r1,c1)) continue;
+        const enemy = simBoard[r1][c1];
+        if (enemy !== DEFENDER && enemy !== KING) continue;
+        if (enemy === KING) continue;
+        const r2 = move.toRow+2*dr, c2 = move.toCol+2*dc;
+        let capture = false;
+        if (isOnBoard(r2,c2) && simBoard[r2][c2] === ATTACKER) capture = true;
+        if (!capture && isOnBoard(r2,c2) && isHostileTo(r2,c2, enemy)) capture = true;
+        if (capture) captures++;
+    }
+    if (captures > 0) score += (phase === 'early' ? 800 : 1200) * captures;
+
+    if (isEdge(kingRow, kingCol)) {
+        if (isDirectEdgeBlocker(move.toRow, move.toCol, kingRow, kingCol)) {
+            let cornerDist = Infinity;
+            for (const [cr, cc] of CORNERS) {
+                const d = Math.abs(kingRow - cr) + Math.abs(kingCol - cc);
+                if (d < cornerDist) cornerDist = d;
+            }
+            score += 2000 + Math.max(100, 1000 - cornerDist * 100);
+        }
+        if (isDirectEdgeBlocker(move.fromRow, move.fromCol, kingRow, kingCol) && piece === ATTACKER) {
+            score -= 1500;
+        }
+    }
+
+    if (phase === 'early' || phase === 'mid') {
+        for (let ci = 0; ci < BARRICADE_PATTERNS.length; ci++) {
+            const pattern = BARRICADE_PATTERNS[ci];
+            let wouldComplete = true;
+            for (const [r, c] of pattern) {
+                if (r === move.toRow && c === move.toCol) continue;
+                if (simBoard[r][c] !== ATTACKER) { wouldComplete = false; break; }
+            }
+            if (wouldComplete) {
+                let bonus = 5000;
+                if (predictedCorner && getCornerIndex(predictedCorner[0], predictedCorner[1]) === ci) bonus += 3000;
+                if (isEdge(kingRow, kingCol)) {
+                    const corner = CORNERS[ci];
+                    if (Math.abs(kingRow - corner[0]) + Math.abs(kingCol - corner[1]) <= 3) bonus += 3000;
+                }
+                score += bonus;
+            }
+        }
+        const target = getNearestBarricadeSquare(kingRow, kingCol);
+        if (target) {
+            const [tr, tc] = target;
+            const curDist = Math.abs(move.fromRow - tr) + Math.abs(move.fromCol - tc);
+            const newDist = Math.abs(move.toRow - tr) + Math.abs(move.toCol - tc);
+            if (newDist < curDist) {
+                let bonus = 60;
+                if (isEdge(kingRow, kingCol)) {
+                    for (let ci=0; ci<BARRICADE_PATTERNS.length; ci++) {
+                        if (BARRICADE_PATTERNS[ci].some(([pr,pc]) => pr===tr && pc===tc)) {
+                            const corner = CORNERS[ci];
+                            if (Math.abs(kingRow - corner[0]) + Math.abs(kingCol - corner[1]) <= 3) bonus = 300;
+                            break;
+                        }
+                    }
+                }
+                if (predictedCorner) {
+                    const predIdx = getCornerIndex(predictedCorner[0], predictedCorner[1]);
+                    if (BARRICADE_PATTERNS[predIdx] && BARRICADE_PATTERNS[predIdx].some(([pr,pc]) => pr===tr && pc===tc)) {
+                        bonus = Math.max(bonus, 120);
+                    }
+                }
+                score += (curDist - newDist) * bonus;
+            }
+            if (move.toRow === tr && move.toCol === tc) {
+                let bonus = 200;
+                if (isEdge(kingRow, kingCol)) {
+                    for (let ci=0; ci<BARRICADE_PATTERNS.length; ci++) {
+                        if (BARRICADE_PATTERNS[ci].some(([pr,pc]) => pr===tr && pc===tc)) {
+                            const corner = CORNERS[ci];
+                            if (Math.abs(kingRow - corner[0]) + Math.abs(kingCol - corner[1]) <= 3) bonus = 600;
+                            break;
+                        }
+                    }
+                }
+                if (predictedCorner) {
+                    const predIdx = getCornerIndex(predictedCorner[0], predictedCorner[1]);
+                    if (BARRICADE_PATTERNS[predIdx] && BARRICADE_PATTERNS[predIdx].some(([pr,pc]) => pr===tr && pc===tc)) {
+                        bonus = Math.max(bonus, 500);
+                    }
+                }
+                score += bonus;
+                if (!isAdjacentToCorner(tr, tc)) score += 50;
+            }
+        }
+        if (isAdjacentToCorner(move.toRow, move.toCol)) {
+            for (const [cr, cc] of CORNERS) {
+                if (Math.abs(move.toRow - cr) + Math.abs(move.toCol - cc) === 1) {
+                    if (Math.abs(kingRow - cr) + Math.abs(kingCol - cc) <= 3) score -= 100;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (phase === 'mid' || phase === 'late') {
+        const distToKing = Math.abs(move.toRow - kingRow) + Math.abs(move.toCol - kingCol);
+        const curDist = Math.abs(move.fromRow - kingRow) + Math.abs(move.fromCol - kingCol);
+        if (phase === 'mid') {
+            const optimal = 4;
+            score += (optimal - Math.abs(distToKing - optimal)) * 10;
+        } else {
+            score += (curDist - distToKing) * 25;
+        }
+    }
+
+    if (isEdge(move.toRow, move.toCol)) {
+        let edgeBonus = 15;
+        for (const [cr, cc] of CORNERS) {
+            const d = Math.abs(move.toRow - cr) + Math.abs(move.toCol - cc);
+            if (d <= 3) edgeBonus += (4 - d) * 10;
+        }
+        score += edgeBonus;
+    }
+
+    if (phase === 'early') {
+        const cd = Math.abs(move.toRow - CENTER) + Math.abs(move.toCol - CENTER);
+        score += (10 - cd) * 2;
+    }
+
+    if (phase === 'early' && Math.abs(move.toRow - kingRow) + Math.abs(move.toCol - kingCol) <= 2) score -= 30;
+
+    score += (Math.random() * 6) - 3;
+    return score;
+}
+
+// ---------- Defender AI ----------
+function evaluateDefenderMove(move, kingRow, kingCol) {
+    const simBoard = board.map(row => [...row]);
+    const piece = simBoard[move.fromRow][move.fromCol];
+    simBoard[move.toRow][move.toCol] = piece;
+    simBoard[move.fromRow][move.fromCol] = EMPTY;
+
+    let score = 0;
+
+    // 1. Capture attackers
+    let captures = 0;
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+    for (const [dr, dc] of dirs) {
+        const r1 = move.toRow + dr, c1 = move.toCol + dc;
+        if (!isOnBoard(r1, c1)) continue;
+        const enemy = simBoard[r1][c1];
+        if (enemy !== ATTACKER) continue;
+        const r2 = move.toRow + 2*dr, c2 = move.toCol + 2*dc;
+        let capture = false;
+        if (isOnBoard(r2, c2) && simBoard[r2][c2] === DEFENDER) capture = true;
+        if (!capture && isOnBoard(r2, c2) && isHostileTo(r2, c2, enemy)) capture = true;
+        if (capture) captures++;
+    }
+    if (captures > 0) score += 1200 * captures;
+
+    // 2. King moves
+    if (piece === KING) {
+        const kingSafe = isKingSafeAfterMove(simBoard);
+        if (kingSafe) score += 200;
+        else score -= 500;
+
+        let minDist = Infinity;
+        for (const [cr, cc] of CORNERS) {
+            const d = Math.abs(move.toRow - cr) + Math.abs(move.toCol - cc);
+            if (d < minDist) minDist = d;
+        }
+        if (minDist < 6) score += (6 - minDist) * 30;
+
+        if (isCorner(move.toRow, move.toCol)) {
+            score += 10000;
+        }
+
+        let adjacentAttackers = 0;
+        for (const [dr, dc] of dirs) {
+            const nr = move.toRow + dr, nc = move.toCol + dc;
+            if (isOnBoard(nr, nc) && simBoard[nr][nc] === ATTACKER) adjacentAttackers++;
+        }
+        if (adjacentAttackers >= 3) score -= 1000;
+        else if (adjacentAttackers === 2) score -= 300;
+        else if (adjacentAttackers === 1) score -= 50;
+    } else {
+        const distFromKing = Math.abs(move.toRow - kingRow) + Math.abs(move.toCol - kingCol);
+        const curDist = Math.abs(move.fromRow - kingRow) + Math.abs(move.fromCol - kingCol);
+        if (distFromKing < curDist) {
+            score += (curDist - distFromKing) * 20;
+        }
+        if (distFromKing === 1) score += 30;
+    }
+
+    score += (Math.random() * 4) - 2;
+    return score;
+}
+
+function isKingSafeAfterMove(boardState) {
+    let kr = -1, kc = -1;
+    for (let r=0; r<SIZE; r++) for (let c=0; c<SIZE; c++) {
+        if (boardState[r][c] === KING) { kr=r; kc=c; break; }
+    }
+    if (kr === -1) return false;
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+    let adjacentAttackers = 0;
+    for (const [dr, dc] of dirs) {
+        const nr = kr+dr, nc = kc+dc;
+        if (isOnBoard(nr, nc) && boardState[nr][nc] === ATTACKER) adjacentAttackers++;
+    }
+    return adjacentAttackers < 3;
 }
 
 // ------------------------------------------------------------------
-//  Player click handler (now simplified because event delegation handles the click)
+//  Computer move dispatcher
+// ------------------------------------------------------------------
+function computerMove() {
+    if (gameOver || isAnimating || gameMode !== 'computer') return;
+    if (currentTurn !== 'computer') return;
+
+    const isAttacker = (aiSide === 'black');
+    const playerType = isAttacker ? 'attackers' : 'defenders';
+    const allMoves = getAllMovesForPlayer(playerType);
+    if (allMoves.length === 0) {
+        updateStatus('Computer has no moves! Draw?');
+        gameOver = true;
+        renderBoard();
+        return;
+    }
+
+    let kingRow = -1, kingCol = -1;
+    for (let r = 0; r < SIZE; r++) {
+        for (let c = 0; c < SIZE; c++) {
+            if (board[r][c] === KING) { kingRow = r; kingCol = c; break; }
+        }
+        if (kingRow !== -1) break;
+    }
+
+    let bestScore = -Infinity;
+    let bestMoves = [];
+    for (const move of allMoves) {
+        let score;
+        if (isAttacker) {
+            score = evaluateAttackerMove(move, kingRow, kingCol);
+        } else {
+            score = evaluateDefenderMove(move, kingRow, kingCol);
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            bestMoves = [move];
+        } else if (score === bestScore) {
+            bestMoves.push(move);
+        }
+    }
+
+    const chosen = bestMoves[Math.floor(Math.random() * bestMoves.length)];
+    performMove(chosen.fromRow, chosen.fromCol, chosen.toRow, chosen.toCol);
+}
+
+// ------------------------------------------------------------------
+//  Player click handler
 // ------------------------------------------------------------------
 function onCellClick(row, col) {
     if (gameOver || isAnimating) return;
@@ -586,14 +920,18 @@ function onCellClick(row, col) {
     const activeSide = (currentTurn === 'player') ? playerSide : 'black';
     const piece = board[row][col];
 
+    // ---- STEP 1: Check if clicking on a legal move destination ----
     if (selectedRow !== -1 && legalMovesForSelected.some(([r, c]) => r === row && c === col)) {
         performMove(selectedRow, selectedCol, row, col);
         return;
     }
 
+    // ---- STEP 2: HUMAN MODE ----
     if (gameMode === 'human') {
         if (!piece) {
-            selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+            selectedRow = -1;
+            selectedCol = -1;
+            legalMovesForSelected = [];
             renderBoard();
             const turnName = (currentTurn === 'player') ? 'Player 1' : 'Player 2';
             updateStatus(`${turnName}'s turn`);
@@ -602,22 +940,26 @@ function onCellClick(row, col) {
         const side = getSide(piece);
         if ((currentTurn === 'player' && side !== 'white') ||
             (currentTurn === 'human2' && side !== 'black')) {
-            return;
+            return; // Not your piece
         }
     }
 
+    // ---- STEP 3: COMPUTER MODE ----
     if (gameMode === 'computer') {
         if (!piece) {
-            selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+            selectedRow = -1;
+            selectedCol = -1;
+            legalMovesForSelected = [];
             renderBoard();
             const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
             updateStatus(`Your turn (${sideName})`);
             return;
         }
         const side = getSide(piece);
-        if (side !== playerSide) return;
+        if (side !== playerSide) return; // Not your piece
     }
 
+    // ---- STEP 4: Select a piece ----
     if (piece && getSide(piece) === activeSide) {
         const moves = getLegalMoves(row, col);
         if (moves.length > 0) {
@@ -633,14 +975,19 @@ function onCellClick(row, col) {
                 updateStatus(`${pName} – select destination`);
             }
         } else {
-            selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+            selectedRow = -1;
+            selectedCol = -1;
+            legalMovesForSelected = [];
             renderBoard();
             updateStatus('That piece has no moves');
         }
         return;
     }
 
-    selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+    // ---- STEP 5: Clear selection ----
+    selectedRow = -1;
+    selectedCol = -1;
+    legalMovesForSelected = [];
     renderBoard();
     if (gameMode === 'computer') {
         const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
@@ -651,12 +998,16 @@ function onCellClick(row, col) {
     }
 }
 
+
 // ------------------------------------------------------------------
 //  Reset
 // ------------------------------------------------------------------
 function resetGame(preserveMode = false) {
+    // ---- HIDE WIN OVERLAY ----
     document.getElementById('win-overlay').classList.add('hidden');
 
+    // If preserveMode is true, we keep the current gameMode and side assignments
+    // Otherwise, we go back to the menu (if gameMode is null)
     if (!preserveMode && !gameMode) {
         showMenu();
         return;
@@ -664,7 +1015,9 @@ function resetGame(preserveMode = false) {
 
     initBoard();
     gameOver = false;
-    selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+    selectedRow = -1;
+    selectedCol = -1;
+    legalMovesForSelected = [];
     isAnimating = false;
     moveCount = 0;
     kingHistory = [];
@@ -700,21 +1053,27 @@ document.getElementById('reset-btn').addEventListener('click', () => {
 //  Start
 // ------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', () => {
+    // ---- Update board size on load ----
     updateBoardSize();
     initBoard();
-    buildBoardCells();   // create DOM cells once
     renderBoard();
     showMenu();
     updateStatus('Choose a game mode');
 
+    // ---- Resize handler ----
     window.addEventListener('resize', () => {
         updateBoardSize();
         if (!menuOverlay.classList.contains('hidden')) return;
         renderBoard();
     });
 
-    document.getElementById('win-close-btn').addEventListener('click', () => {
-        document.getElementById('win-overlay').classList.add('hidden');
-        resetGame(true);
-    });
+    // ---- WIN OVERLAY "PLAY AGAIN" BUTTON ----
+    const winCloseBtn = document.getElementById('win-close-btn');
+    if (winCloseBtn) {
+        winCloseBtn.addEventListener('click', () => {
+            document.getElementById('win-overlay').classList.add('hidden');
+            // Restart with the same mode and side
+            resetGame(true);
+        });
+    }
 });
