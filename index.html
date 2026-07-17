@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hnefatafl – King's Table</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Menu overlay -->
+        <div id="menu-overlay">
+            <div id="menu">
+                <h1>Hnefatafl</h1>
+                <p>Choose game mode</p>
+                <button id="btn-vs-computer">🖥️ VS Computer</button>
+                <button id="btn-vs-human">👥 VS Human (Hotseat)</button>
+            </div>
+        </div>
+
+        <!-- Coin flip overlay -->
+        <div id="coin-overlay" class="hidden">
+            <div id="coin-container">
+                <div id="coin">
+                    <div class="side front">
+                        <img src="defenders.png" alt="Defenders">
+                        <span>Defenders</span>
+                    </div>
+                    <div class="side back">
+                        <img src="attackers.png" alt="Attackers">
+                        <span>Attackers</span>
+                    </div>
+                </div>
+            </div>
+            <p id="coin-result">Flipping...</p>
+        </div>
+		
+		<!-- Win announcement overlay -->
+<div id="win-overlay" class="hidden">
+    <div id="win-box">
+        <h2 id="win-title">🏆 Winner!</h2>
+        <p id="win-message">Defenders win!</p>
+        <button id="win-close-btn">Play Again</button>
+    </div>
+</div>
+
+        <h1 id="game-title">Hnefatafl</h1>
+        <div id="status">Your turn (Defenders)</div>
+        <div id="board-container">
+            <div id="board"></div>
+        </div>
+        <button id="reset-btn">⟳ New Game</button>
+        <div id="info">
+            <p><strong>Rules:</strong> Move your King to any corner to win.<br>
+            Attackers win by surrounding the King on all four sides.</p>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
