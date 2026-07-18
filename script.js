@@ -1,7 +1,6 @@
 // ============================================================
-//  Hnefatafl – Complete Game with Coin Flip & AI for both sides
-//  AI can play as Defenders or Attackers.
-//  Coin flip is smooth, realistic, and truly 50/50.
+//  Hnefatafl – Optimized rendering (no DOM rebuild)
+//  Uses persistent DOM cells and event delegation.
 // ============================================================
 
 const SIZE = 11;
@@ -53,6 +52,9 @@ const coinOverlay = document.getElementById('coin-overlay');
 const coinEl = document.getElementById('coin');
 const coinResultEl = document.getElementById('coin-result');
 
+// ---- Persistent cell references ----
+let cells = [];
+
 // ------------------------------------------------------------------
 //  Menu handling
 // ------------------------------------------------------------------
@@ -68,7 +70,7 @@ function hideMenu() {
 }
 
 // ------------------------------------------------------------------
-//  🪙 SMOOTH COIN FLIP – uses CSS animation for reliability
+//  🪙 SMOOTH COIN FLIP
 // ------------------------------------------------------------------
 function flipCoin(callback) {
     coinOverlay.classList.remove('hidden');
@@ -76,15 +78,12 @@ function flipCoin(callback) {
     coinResultEl.style.opacity = '1';
     coinResultEl.style.textShadow = '0 2px 8px rgba(0,0,0,0.8)';
 
-    // Reset coin to starting position
     coinEl.classList.remove('flipping');
     coinEl.style.transform = 'rotateY(0deg)';
     coinEl.style.transition = 'none';
 
-    // Force reflow
     void coinEl.offsetHeight;
 
-    // ---- Generate truly random result ----
     const randomBytes = new Uint8Array(1);
     crypto.getRandomValues(randomBytes);
     const result = randomBytes[0] < 128 ? 0 : 1;
@@ -93,16 +92,11 @@ function flipCoin(callback) {
     const sideText = result === 0 ? 'Defenders' : 'Attackers';
     const emoji = result === 0 ? '🛡️' : '⚔️';
 
-    // ---- Start flip animation ----
     coinEl.style.transition = 'transform 1.4s cubic-bezier(0.15, 0.85, 0.35, 1)';
-
-    // Total rotation: 3 full spins + final angle
     const totalRotation = 3 * 360 + finalAngle;
     coinEl.style.transform = `rotateY(${totalRotation}deg)`;
 
-    // ---- Show result after animation ----
     setTimeout(() => {
-        // Ensure final position is exact
         coinEl.style.transition = 'transform 0.1s ease';
         coinEl.style.transform = `rotateY(${finalAngle}deg)`;
 
@@ -175,7 +169,6 @@ function initBoard() {
     ];
     for (const [r, c] of defenderPositions) board[r][c] = DEFENDER;
 
-    // Attackers: (0,3-7) + (1,5) per side
     for (let c = 3; c <= 7; c++) board[0][c] = ATTACKER;
     board[1][5] = ATTACKER;
     for (let c = 3; c <= 7; c++) board[10][c] = ATTACKER;
@@ -187,11 +180,13 @@ function initBoard() {
 }
 
 // ------------------------------------------------------------------
-//  Rendering
+//  Build persistent DOM cells (called once at startup)
 // ------------------------------------------------------------------
-function renderBoard() {
+function buildBoardCells() {
     boardEl.innerHTML = '';
+    cells = [];
     for (let r = 0; r < SIZE; r++) {
+        cells[r] = [];
         for (let c = 0; c < SIZE; c++) {
             const cell = document.createElement('div');
             cell.className = 'cell';
@@ -206,26 +201,42 @@ function renderBoard() {
             label.textContent = `${r},${c}`;
             cell.appendChild(label);
 
+            const img = document.createElement('img');
+            img.className = 'piece-img';
+            img.style.display = 'none';
+            cell.appendChild(img);
+
+            cells[r][c] = cell;
+            boardEl.appendChild(cell);
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+//  Optimized rendering – updates only what changed
+// ------------------------------------------------------------------
+function renderBoard() {
+    for (let r = 0; r < SIZE; r++) {
+        for (let c = 0; c < SIZE; c++) {
+            const cell = cells[r][c];
             const piece = board[r][c];
+            const img = cell.querySelector('.piece-img');
+
             if (piece) {
-                const img = document.createElement('img');
-                img.className = 'piece-img';
                 let src = '';
                 if (piece === KING) src = 'king.png';
                 else if (piece === DEFENDER) src = 'defenders.png';
                 else if (piece === ATTACKER) src = 'attackers.png';
-                img.src = src;
+                if (img.src !== src) img.src = src;
+                img.style.display = 'block';
                 img.alt = piece;
-                cell.appendChild(img);
+            } else {
+                img.style.display = 'none';
+                img.src = '';
             }
 
-            if (selectedRow === r && selectedCol === c) cell.classList.add('selected');
-            if (legalMovesForSelected.some(([mr, mc]) => mr === r && mc === c)) {
-                cell.classList.add('selectable');
-            }
-
-            cell.addEventListener('click', () => onCellClick(r, c));
-            boardEl.appendChild(cell);
+            cell.classList.toggle('selected', selectedRow === r && selectedCol === c);
+            cell.classList.toggle('selectable', legalMovesForSelected.some(([mr, mc]) => mr === r && mc === c));
         }
     }
 }
@@ -236,7 +247,18 @@ function updateStatus(message, isThinking = false) {
 }
 
 // ------------------------------------------------------------------
-//  Helpers
+//  Event delegation: single click listener on boardEl
+// ------------------------------------------------------------------
+boardEl.addEventListener('click', (e) => {
+    const cell = e.target.closest('.cell');
+    if (!cell) return;
+    const row = parseInt(cell.dataset.row);
+    const col = parseInt(cell.dataset.col);
+    onCellClick(row, col);
+});
+
+// ------------------------------------------------------------------
+//  Helpers (unchanged)
 // ------------------------------------------------------------------
 function isOnBoard(r, c) { return r >= 0 && r < SIZE && c >= 0 && c < SIZE; }
 function isCorner(r, c) { return CORNERS.some(([cr, cc]) => cr === r && cc === c); }
@@ -428,8 +450,8 @@ function isKingCapturedState(boardState) {
 // ------------------------------------------------------------------
 function animateMove(fromRow, fromCol, toRow, toCol, pieceType, callback) {
     const boardRect = boardEl.getBoundingClientRect();
-    const fromCell = document.querySelector(`.cell[data-row="${fromRow}"][data-col="${fromCol}"]`);
-    const toCell = document.querySelector(`.cell[data-row="${toRow}"][data-col="${toCol}"]`);
+    const fromCell = cells[fromRow][fromCol];
+    const toCell = cells[toRow][toCol];
     if (!fromCell || !toCell) { callback(); return; }
     const fromRect = fromCell.getBoundingClientRect();
     const toRect = toCell.getBoundingClientRect();
@@ -494,7 +516,6 @@ function performMove(fromRow, fromCol, toRow, toCol) {
     animateMove(fromRow, fromCol, toRow, toCol, piece, () => {
         isAnimating = false;
         if (gameOver) {
-            // ---- SHOW WIN OVERLAY ----
             const winTitle = document.getElementById('win-title');
             const winMessage = document.getElementById('win-message');
             const winOverlay = document.getElementById('win-overlay');
@@ -527,7 +548,6 @@ function performMove(fromRow, fromCol, toRow, toCol) {
                 return;
             }
         } else {
-            // ---- HUMAN MODE: use "Defenders" and "Attackers" ----
             if (currentTurn === 'player') {
                 updateStatus('Player 1\'s turn (Defenders)');
             } else {
@@ -540,10 +560,8 @@ function performMove(fromRow, fromCol, toRow, toCol) {
 }
 
 // ------------------------------------------------------------------
-//  AI Evaluation for both sides
+//  AI Evaluation for both sides (unchanged)
 // ------------------------------------------------------------------
-
-// ---------- Attacker AI ----------
 function isCornerBlocked(cornerIndex) {
     const pattern = BARRICADE_PATTERNS[cornerIndex];
     if (!pattern) return false;
@@ -785,7 +803,6 @@ function evaluateAttackerMove(move, kingRow, kingCol) {
     return score;
 }
 
-// ---------- Defender AI ----------
 function evaluateDefenderMove(move, kingRow, kingCol) {
     const simBoard = board.map(row => [...row]);
     const piece = simBoard[move.fromRow][move.fromCol];
@@ -794,7 +811,6 @@ function evaluateDefenderMove(move, kingRow, kingCol) {
 
     let score = 0;
 
-    // 1. Capture attackers
     let captures = 0;
     const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
     for (const [dr, dc] of dirs) {
@@ -810,7 +826,6 @@ function evaluateDefenderMove(move, kingRow, kingCol) {
     }
     if (captures > 0) score += 1200 * captures;
 
-    // 2. King moves
     if (piece === KING) {
         const kingSafe = isKingSafeAfterMove(simBoard);
         if (kingSafe) score += 200;
@@ -920,13 +935,11 @@ function onCellClick(row, col) {
     const activeSide = (currentTurn === 'player') ? playerSide : 'black';
     const piece = board[row][col];
 
-    // ---- STEP 1: Check if clicking on a legal move destination ----
     if (selectedRow !== -1 && legalMovesForSelected.some(([r, c]) => r === row && c === col)) {
         performMove(selectedRow, selectedCol, row, col);
         return;
     }
 
-    // ---- STEP 2: HUMAN MODE ----
     if (gameMode === 'human') {
         if (!piece) {
             selectedRow = -1;
@@ -940,11 +953,10 @@ function onCellClick(row, col) {
         const side = getSide(piece);
         if ((currentTurn === 'player' && side !== 'white') ||
             (currentTurn === 'human2' && side !== 'black')) {
-            return; // Not your piece
+            return;
         }
     }
 
-    // ---- STEP 3: COMPUTER MODE ----
     if (gameMode === 'computer') {
         if (!piece) {
             selectedRow = -1;
@@ -956,10 +968,9 @@ function onCellClick(row, col) {
             return;
         }
         const side = getSide(piece);
-        if (side !== playerSide) return; // Not your piece
+        if (side !== playerSide) return;
     }
 
-    // ---- STEP 4: Select a piece ----
     if (piece && getSide(piece) === activeSide) {
         const moves = getLegalMoves(row, col);
         if (moves.length > 0) {
@@ -984,7 +995,6 @@ function onCellClick(row, col) {
         return;
     }
 
-    // ---- STEP 5: Clear selection ----
     selectedRow = -1;
     selectedCol = -1;
     legalMovesForSelected = [];
@@ -998,16 +1008,12 @@ function onCellClick(row, col) {
     }
 }
 
-
 // ------------------------------------------------------------------
 //  Reset
 // ------------------------------------------------------------------
 function resetGame(preserveMode = false) {
-    // ---- HIDE WIN OVERLAY ----
     document.getElementById('win-overlay').classList.add('hidden');
 
-    // If preserveMode is true, we keep the current gameMode and side assignments
-    // Otherwise, we go back to the menu (if gameMode is null)
     if (!preserveMode && !gameMode) {
         showMenu();
         return;
@@ -1053,26 +1059,23 @@ document.getElementById('reset-btn').addEventListener('click', () => {
 //  Start
 // ------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', () => {
-    // ---- Update board size on load ----
     updateBoardSize();
     initBoard();
+    buildBoardCells();
     renderBoard();
     showMenu();
     updateStatus('Choose a game mode');
 
-    // ---- Resize handler ----
     window.addEventListener('resize', () => {
         updateBoardSize();
         if (!menuOverlay.classList.contains('hidden')) return;
         renderBoard();
     });
 
-    // ---- WIN OVERLAY "PLAY AGAIN" BUTTON ----
     const winCloseBtn = document.getElementById('win-close-btn');
     if (winCloseBtn) {
         winCloseBtn.addEventListener('click', () => {
             document.getElementById('win-overlay').classList.add('hidden');
-            // Restart with the same mode and side
             resetGame(true);
         });
     }
