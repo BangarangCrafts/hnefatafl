@@ -1,5 +1,5 @@
 // ============================================================
-//  Hnefatafl – Complete Game with Coin Flip & AI for both sides
+//  Hnefatafl – Complete Game with Firebase Online Multiplayer
 //  Uses .webp images for faster loading
 // ============================================================
 
@@ -24,10 +24,35 @@ const BARRICADE_PATTERNS = [
 ];
 
 // ------------------------------------------------------------------
+//  Firebase Config & Initialization
+// ------------------------------------------------------------------
+const firebaseConfig = {
+    apiKey: "AIzaSyCo68rKBxpKBqilscLpcic1i7ax1NoHHfk",
+    authDomain: "hnefatafl-multiplayer.firebaseapp.com",
+    databaseURL: "https://hnefatafl-multiplayer-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "hnefatafl-multiplayer",
+    storageBucket: "hnefatafl-multiplayer.firebasestorage.app",
+    messagingSenderId: "680873725088",
+    appId: "1:680873725088:web:fab43cbcb74e22dc428dc5"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+// Test Firebase connection
+db.ref('.info/connected').on('value', (snap) => {
+    if (snap.val() === true) {
+        console.log('✅ Firebase connected');
+    } else {
+        console.warn('⚠️ Firebase disconnected');
+    }
+});
+
+
+// ------------------------------------------------------------------
 //  Global state
 // ------------------------------------------------------------------
 let board = [];
-let currentTurn = 'player';
+let currentTurn = 'player';      // 'player', 'computer', 'human2', 'opponent'
 let gameOver = false;
 let selectedRow = -1;
 let selectedCol = -1;
@@ -36,8 +61,8 @@ let isAnimating = false;
 let moveCount = 0;
 
 let CELL_SIZE = 42;
-let gameMode = null;
-let playerSide = 'white';
+let gameMode = null;              // 'computer', 'human', 'online'
+let playerSide = 'white';         // 'white' (defenders) or 'black' (attackers)
 let aiSide = 'black';
 
 let kingHistory = [];
@@ -52,6 +77,24 @@ const coinOverlay = document.getElementById('coin-overlay');
 const coinEl = document.getElementById('coin');
 const coinResultEl = document.getElementById('coin-result');
 
+// ---------- ONLINE MODE state ----------
+let onlineRoomId = null;
+let onlineRole = null;            // 'host' or 'guest'
+let onlineGameReady = false;
+let onlineGameRef = null;         // Firebase reference for the current game
+let _skipFirebaseSend = false;    // flag to avoid sending moves that came from Firebase
+let _updatingFromFirebase = false; // prevent loops
+
+// ---------- DOM refs for lobby/room ----------
+const lobbyOverlay = document.getElementById('lobby-overlay');
+const lobbyStatus = document.getElementById('lobby-status');
+const gameListEl = document.getElementById('game-list');
+const roomOverlay = document.getElementById('room-overlay');
+const roomGameId = document.getElementById('room-game-id');
+const roomPlayers = document.getElementById('room-players');
+const roomStatus = document.getElementById('room-status');
+const roomMessage = document.getElementById('room-message');
+
 // ------------------------------------------------------------------
 //  Menu handling
 // ------------------------------------------------------------------
@@ -59,6 +102,16 @@ function showMenu() {
     menuOverlay.classList.remove('hidden');
     gameOver = true;
     coinOverlay.classList.add('hidden');
+    lobbyOverlay.classList.add('hidden');
+    roomOverlay.classList.add('hidden');
+    // Detach any Firebase listener
+    if (onlineGameRef) {
+        onlineGameRef.off();
+        onlineGameRef = null;
+    }
+    onlineRoomId = null;
+    onlineRole = null;
+    onlineGameReady = false;
 }
 
 function hideMenu() {
@@ -67,7 +120,7 @@ function hideMenu() {
 }
 
 // ------------------------------------------------------------------
-//  🪙 SMOOTH COIN FLIP – uses CSS animation for reliability
+//  🪙 SMOOTH COIN FLIP
 // ------------------------------------------------------------------
 function flipCoin(callback) {
     coinOverlay.classList.remove('hidden');
@@ -75,15 +128,11 @@ function flipCoin(callback) {
     coinResultEl.style.opacity = '1';
     coinResultEl.style.textShadow = '0 2px 8px rgba(0,0,0,0.8)';
 
-    // Reset coin to starting position
     coinEl.classList.remove('flipping');
     coinEl.style.transform = 'rotateY(0deg)';
     coinEl.style.transition = 'none';
-
-    // Force reflow
     void coinEl.offsetHeight;
 
-    // ---- Generate truly random result ----
     const randomBytes = new Uint8Array(1);
     crypto.getRandomValues(randomBytes);
     const result = randomBytes[0] < 128 ? 0 : 1;
@@ -92,46 +141,52 @@ function flipCoin(callback) {
     const sideText = result === 0 ? 'Defenders' : 'Attackers';
     const emoji = result === 0 ? '🛡️' : '⚔️';
 
-    // ---- Start flip animation ----
     coinEl.style.transition = 'transform 1.4s cubic-bezier(0.15, 0.85, 0.35, 1)';
-
-    // Total rotation: 3 full spins + final angle
     const totalRotation = 3 * 360 + finalAngle;
     coinEl.style.transform = `rotateY(${totalRotation}deg)`;
 
-    // ---- Show result after animation ----
     setTimeout(() => {
-        // Ensure final position is exact
         coinEl.style.transition = 'transform 0.1s ease';
         coinEl.style.transform = `rotateY(${finalAngle}deg)`;
-
         coinResultEl.textContent = `${emoji} You play as ${sideText}!`;
         coinResultEl.style.textShadow = '0 0 40px rgba(255,215,0,0.4), 0 2px 8px rgba(0,0,0,0.8)';
-
         setTimeout(() => {
             callback(result === 0 ? 'white' : 'black');
         }, 1500);
     }, 1550);
 }
 
-document.getElementById('btn-vs-computer').addEventListener('click', () => {
-    gameMode = 'computer';
+// ------------------------------------------------------------------
+//  Lobby / Room event listeners
+// ------------------------------------------------------------------
+document.getElementById('btn-online').addEventListener('click', () => {
+    gameMode = 'online';
     hideMenu();
-    flipCoin((side) => {
-        playerSide = side;
-        aiSide = (side === 'white') ? 'black' : 'white';
-        setTimeout(() => {
-            coinOverlay.classList.add('hidden');
-            resetGame();
-        }, 400);
-    });
+    openLobby();
 });
 
-document.getElementById('btn-vs-human').addEventListener('click', () => {
-    gameMode = 'human';
-    playerSide = 'white';
-    hideMenu();
-    resetGame();
+document.getElementById('lobby-back-btn').addEventListener('click', () => {
+    lobbyOverlay.classList.add('hidden');
+    gameMode = null;
+    showMenu();
+});
+
+document.getElementById('lobby-refresh-btn').addEventListener('click', () => {
+    refreshGameList();
+});
+
+document.getElementById('lobby-create-btn').addEventListener('click', () => {
+    const password = window.prompt('Enter a password for this game:');
+    if (password === null) return;
+    if (password.trim() === '') {
+        alert('Password cannot be empty.');
+        return;
+    }
+    createGame(password);
+});
+
+document.getElementById('room-leave-btn').addEventListener('click', () => {
+    leaveRoom();
 });
 
 // ------------------------------------------------------------------
@@ -141,15 +196,39 @@ function updateBoardSize() {
     const headerReserve = 80;
     const footerReserve = 60;
     const appPadding = 30;
-
     const availHeight = window.innerHeight - headerReserve - footerReserve - 20;
     const availWidth = window.innerWidth - appPadding - 20;
-
     let size = Math.min(availHeight / SIZE, availWidth / SIZE);
     size = Math.max(26, Math.min(52, size));
-
     CELL_SIZE = Math.floor(size);
     document.documentElement.style.setProperty('--cell-size', CELL_SIZE + 'px');
+}
+
+// ------------------------------------------------------------------
+//  Board helpers
+// ------------------------------------------------------------------
+function boardToString(boardArray) {
+    let s = '';
+    for (let r = 0; r < SIZE; r++) {
+        for (let c = 0; c < SIZE; c++) {
+            const p = boardArray[r][c];
+            s += p || '.';
+        }
+    }
+    return s;
+}
+
+function stringToBoard(str) {
+    const b = Array.from({ length: SIZE }, () => Array(SIZE).fill(EMPTY));
+    for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        const r = Math.floor(i / SIZE);
+        const c = i % SIZE;
+        if (ch === 'K') b[r][c] = KING;
+        else if (ch === 'D') b[r][c] = DEFENDER;
+        else if (ch === 'A') b[r][c] = ATTACKER;
+    }
+    return b;
 }
 
 // ------------------------------------------------------------------
@@ -174,7 +253,6 @@ function initBoard() {
     ];
     for (const [r, c] of defenderPositions) board[r][c] = DEFENDER;
 
-    // Attackers: (0,3-7) + (1,5) per side
     for (let c = 3; c <= 7; c++) board[0][c] = ATTACKER;
     board[1][5] = ATTACKER;
     for (let c = 3; c <= 7; c++) board[10][c] = ATTACKER;
@@ -186,7 +264,7 @@ function initBoard() {
 }
 
 // ------------------------------------------------------------------
-//  Rendering (UPDATED: .webp images)
+//  Rendering
 // ------------------------------------------------------------------
 function renderBoard() {
     boardEl.innerHTML = '';
@@ -235,7 +313,7 @@ function updateStatus(message, isThinking = false) {
 }
 
 // ------------------------------------------------------------------
-//  Helpers
+//  Helpers (unchanged)
 // ------------------------------------------------------------------
 function isOnBoard(r, c) { return r >= 0 && r < SIZE && c >= 0 && c < SIZE; }
 function isCorner(r, c) { return CORNERS.some(([cr, cc]) => cr === r && cc === c); }
@@ -276,7 +354,7 @@ function isAdjacentToCorner(row, col) {
 }
 
 // ------------------------------------------------------------------
-//  King tracking
+//  King tracking (unchanged)
 // ------------------------------------------------------------------
 function findKingPos() {
     for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
@@ -335,7 +413,7 @@ function getCornerIndex(row, col) {
 }
 
 // ------------------------------------------------------------------
-//  Legal moves
+//  Legal moves (unchanged)
 // ------------------------------------------------------------------
 function getLegalMoves(row, col) {
     const piece = board[row][col];
@@ -371,7 +449,7 @@ function getAllMovesForPlayer(player) {
 }
 
 // ------------------------------------------------------------------
-//  Capture logic
+//  Capture logic (unchanged)
 // ------------------------------------------------------------------
 function applyCaptures(row, col) {
     const movedPiece = board[row][col];
@@ -401,7 +479,7 @@ function applyCaptures(row, col) {
 }
 
 // ------------------------------------------------------------------
-//  King capture check
+//  King capture check (unchanged)
 // ------------------------------------------------------------------
 function isKingCapturedState(boardState) {
     let kr = -1, kc = -1;
@@ -423,7 +501,7 @@ function isKingCapturedState(boardState) {
 }
 
 // ------------------------------------------------------------------
-//  Animation (UPDATED: .webp images)
+//  Animation (unchanged)
 // ------------------------------------------------------------------
 function animateMove(fromRow, fromCol, toRow, toCol, pieceType, callback) {
     const boardRect = boardEl.getBoundingClientRect();
@@ -469,12 +547,13 @@ function animateMove(fromRow, fromCol, toRow, toCol, pieceType, callback) {
 }
 
 // ------------------------------------------------------------------
-//  Core move
+//  Core move (modified for online sync)
 // ------------------------------------------------------------------
 function performMove(fromRow, fromCol, toRow, toCol) {
     if (gameOver || isAnimating) return false;
     const piece = board[fromRow][fromCol];
     if (!piece) return false;
+
     board[toRow][toCol] = piece;
     board[fromRow][fromCol] = EMPTY;
     applyCaptures(toRow, toCol);
@@ -493,7 +572,6 @@ function performMove(fromRow, fromCol, toRow, toCol) {
     animateMove(fromRow, fromCol, toRow, toCol, piece, () => {
         isAnimating = false;
         if (gameOver) {
-            // ---- SHOW WIN OVERLAY ----
             const winTitle = document.getElementById('win-title');
             const winMessage = document.getElementById('win-message');
             const winOverlay = document.getElementById('win-overlay');
@@ -506,14 +584,37 @@ function performMove(fromRow, fromCol, toRow, toCol) {
             }
             winOverlay.classList.remove('hidden');
             renderBoard();
+            // Update Firebase with game over state
+            if (gameMode === 'online' && onlineRoomId && !_updatingFromFirebase) {
+                onlineGameRef.update({ winner: winner, gameOver: true });
+            }
             return;
         }
+
+        // --- Turn management ---
         if (gameMode === 'computer') {
             currentTurn = (currentTurn === 'player') ? 'computer' : 'player';
-        } else {
+        } else if (gameMode === 'human') {
             currentTurn = (currentTurn === 'player') ? 'human2' : 'player';
+        } else { // online
+            // After local move, set turn to opponent unless game over.
+            currentTurn = 'opponent';
         }
         selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+
+        // --- Online: send move to Firebase (if this was a local move) ---
+        if (gameMode === 'online' && onlineRoomId && !_skipFirebaseSend && !_updatingFromFirebase) {
+            // Update Firebase board and currentTurn
+            const boardStr = boardToString(board);
+            const turn = (currentTurn === 'player') ? playerSide : (playerSide === 'white' ? 'black' : 'white');
+            onlineGameRef.update({
+                board: boardStr,
+                currentTurn: turn,
+                moveCount: moveCount
+            });
+        }
+
+        // --- Update status based on mode ---
         if (gameMode === 'computer') {
             if (currentTurn === 'player') {
                 const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
@@ -525,12 +626,20 @@ function performMove(fromRow, fromCol, toRow, toCol) {
                 setTimeout(() => computerMove(), 300);
                 return;
             }
-        } else {
-            // ---- HUMAN MODE: use "Defenders" and "Attackers" ----
+        } else if (gameMode === 'human') {
             if (currentTurn === 'player') {
                 updateStatus('Player 1\'s turn (Defenders)');
             } else {
                 updateStatus('Player 2\'s turn (Attackers)');
+            }
+        } else { // online
+            if (currentTurn === 'player') {
+                const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+                updateStatus(`Your turn (${sideName})`);
+            } else if (currentTurn === 'opponent') {
+                updateStatus('Waiting for opponent...', true);
+            } else {
+                updateStatus('Online game');
             }
         }
         renderBoard();
@@ -539,10 +648,127 @@ function performMove(fromRow, fromCol, toRow, toCol) {
 }
 
 // ------------------------------------------------------------------
-//  AI Evaluation for both sides
+//  Player click handler (modified for online)
 // ------------------------------------------------------------------
+function onCellClick(row, col) {
+    if (gameOver || isAnimating) return;
 
-// ---------- Attacker AI ----------
+    if (gameMode === 'online') {
+        if (currentTurn !== 'player') return;
+        if (!onlineGameReady) {
+            updateStatus('Waiting for opponent...');
+            return;
+        }
+    }
+
+    if (gameMode === 'computer' && currentTurn !== 'player') return;
+
+    const activeSide = (currentTurn === 'player') ? playerSide : (gameMode === 'human' && currentTurn === 'human2' ? 'black' : null);
+    const piece = board[row][col];
+
+    // ---- Click on legal move destination ----
+    if (selectedRow !== -1 && legalMovesForSelected.some(([r, c]) => r === row && c === col)) {
+        if (gameMode === 'online') {
+            // Local move – will be sent to Firebase after performMove
+            _skipFirebaseSend = false;
+            performMove(selectedRow, selectedCol, row, col);
+            return;
+        } else {
+            performMove(selectedRow, selectedCol, row, col);
+            return;
+        }
+    }
+
+    // ---- Human mode ----
+    if (gameMode === 'human') {
+        if (!piece) {
+            selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+            renderBoard();
+            const turnName = (currentTurn === 'player') ? 'Player 1' : 'Player 2';
+            updateStatus(`${turnName}'s turn`);
+            return;
+        }
+        const side = getSide(piece);
+        if ((currentTurn === 'player' && side !== 'white') ||
+            (currentTurn === 'human2' && side !== 'black')) {
+            return;
+        }
+    }
+
+    // ---- Computer mode ----
+    if (gameMode === 'computer') {
+        if (!piece) {
+            selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+            renderBoard();
+            const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+            updateStatus(`Your turn (${sideName})`);
+            return;
+        }
+        const side = getSide(piece);
+        if (side !== playerSide) return;
+    }
+
+    // ---- Online mode (piece selection) ----
+    if (gameMode === 'online') {
+        if (!piece) {
+            selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+            renderBoard();
+            const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+            updateStatus(`Your turn (${sideName})`);
+            return;
+        }
+        const side = getSide(piece);
+        if (side !== playerSide) return;
+    }
+
+    // ---- Select a piece ----
+    if (piece && getSide(piece) === activeSide) {
+        const moves = getLegalMoves(row, col);
+        if (moves.length > 0) {
+            selectedRow = row;
+            selectedCol = col;
+            legalMovesForSelected = moves;
+            renderBoard();
+            if (gameMode === 'computer') {
+                const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+                updateStatus(`Select destination (${sideName})`);
+            } else if (gameMode === 'human') {
+                const pName = (activeSide === 'white') ? 'Player 1' : 'Player 2';
+                updateStatus(`${pName} – select destination`);
+            } else { // online
+                const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+                updateStatus(`Select destination (${sideName})`);
+            }
+        } else {
+            selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+            renderBoard();
+            updateStatus('That piece has no moves');
+        }
+        return;
+    }
+
+    // ---- Clear selection ----
+    selectedRow = -1; selectedCol = -1; legalMovesForSelected = [];
+    renderBoard();
+    if (gameMode === 'computer') {
+        const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+        updateStatus(`Your turn (${sideName})`);
+    } else if (gameMode === 'human') {
+        const turnName = (currentTurn === 'player') ? 'Player 1' : 'Player 2';
+        updateStatus(`${turnName}'s turn`);
+    } else { // online
+        if (currentTurn === 'player') {
+            const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+            updateStatus(`Your turn (${sideName})`);
+        } else {
+            updateStatus('Waiting for opponent...', true);
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+//  AI evaluation (unchanged)
+// ------------------------------------------------------------------
 function isCornerBlocked(cornerIndex) {
     const pattern = BARRICADE_PATTERNS[cornerIndex];
     if (!pattern) return false;
@@ -784,7 +1010,6 @@ function evaluateAttackerMove(move, kingRow, kingCol) {
     return score;
 }
 
-// ---------- Defender AI ----------
 function evaluateDefenderMove(move, kingRow, kingCol) {
     const simBoard = board.map(row => [...row]);
     const piece = simBoard[move.fromRow][move.fromCol];
@@ -793,7 +1018,6 @@ function evaluateDefenderMove(move, kingRow, kingCol) {
 
     let score = 0;
 
-    // 1. Capture attackers
     let captures = 0;
     const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
     for (const [dr, dc] of dirs) {
@@ -809,7 +1033,6 @@ function evaluateDefenderMove(move, kingRow, kingCol) {
     }
     if (captures > 0) score += 1200 * captures;
 
-    // 2. King moves
     if (piece === KING) {
         const kingSafe = isKingSafeAfterMove(simBoard);
         if (kingSafe) score += 200;
@@ -863,7 +1086,7 @@ function isKingSafeAfterMove(boardState) {
 }
 
 // ------------------------------------------------------------------
-//  Computer move dispatcher
+//  Computer move (unchanged)
 // ------------------------------------------------------------------
 function computerMove() {
     if (gameOver || isAnimating || gameMode !== 'computer') return;
@@ -909,104 +1132,11 @@ function computerMove() {
 }
 
 // ------------------------------------------------------------------
-//  Player click handler
-// ------------------------------------------------------------------
-function onCellClick(row, col) {
-    if (gameOver || isAnimating) return;
-
-    if (gameMode === 'computer' && currentTurn !== 'player') return;
-
-    const activeSide = (currentTurn === 'player') ? playerSide : 'black';
-    const piece = board[row][col];
-
-    // ---- STEP 1: Check if clicking on a legal move destination ----
-    if (selectedRow !== -1 && legalMovesForSelected.some(([r, c]) => r === row && c === col)) {
-        performMove(selectedRow, selectedCol, row, col);
-        return;
-    }
-
-    // ---- STEP 2: HUMAN MODE ----
-    if (gameMode === 'human') {
-        if (!piece) {
-            selectedRow = -1;
-            selectedCol = -1;
-            legalMovesForSelected = [];
-            renderBoard();
-            const turnName = (currentTurn === 'player') ? 'Player 1' : 'Player 2';
-            updateStatus(`${turnName}'s turn`);
-            return;
-        }
-        const side = getSide(piece);
-        if ((currentTurn === 'player' && side !== 'white') ||
-            (currentTurn === 'human2' && side !== 'black')) {
-            return; // Not your piece
-        }
-    }
-
-    // ---- STEP 3: COMPUTER MODE ----
-    if (gameMode === 'computer') {
-        if (!piece) {
-            selectedRow = -1;
-            selectedCol = -1;
-            legalMovesForSelected = [];
-            renderBoard();
-            const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
-            updateStatus(`Your turn (${sideName})`);
-            return;
-        }
-        const side = getSide(piece);
-        if (side !== playerSide) return; // Not your piece
-    }
-
-    // ---- STEP 4: Select a piece ----
-    if (piece && getSide(piece) === activeSide) {
-        const moves = getLegalMoves(row, col);
-        if (moves.length > 0) {
-            selectedRow = row;
-            selectedCol = col;
-            legalMovesForSelected = moves;
-            renderBoard();
-            if (gameMode === 'computer') {
-                const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
-                updateStatus(`Select destination (${sideName})`);
-            } else {
-                const pName = (activeSide === 'white') ? 'Player 1' : 'Player 2';
-                updateStatus(`${pName} – select destination`);
-            }
-        } else {
-            selectedRow = -1;
-            selectedCol = -1;
-            legalMovesForSelected = [];
-            renderBoard();
-            updateStatus('That piece has no moves');
-        }
-        return;
-    }
-
-    // ---- STEP 5: Clear selection ----
-    selectedRow = -1;
-    selectedCol = -1;
-    legalMovesForSelected = [];
-    renderBoard();
-    if (gameMode === 'computer') {
-        const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
-        updateStatus(`Your turn (${sideName})`);
-    } else {
-        const turnName = (currentTurn === 'player') ? 'Player 1' : 'Player 2';
-        updateStatus(`${turnName}'s turn`);
-    }
-}
-
-
-// ------------------------------------------------------------------
 //  Reset
 // ------------------------------------------------------------------
 function resetGame(preserveMode = false) {
-    // ---- HIDE WIN OVERLAY ----
     document.getElementById('win-overlay').classList.add('hidden');
 
-    // If preserveMode is true, we keep the current gameMode and side assignments
-    // Otherwise, we go back to the menu (if gameMode is null)
     if (!preserveMode && !gameMode) {
         showMenu();
         return;
@@ -1027,9 +1157,12 @@ function resetGame(preserveMode = false) {
         currentTurn = 'player';
         const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
         updateStatus(`Your turn (${sideName})`);
-    } else {
+    } else if (gameMode === 'human') {
         currentTurn = 'player';
         updateStatus('Player 1\'s turn (Defenders)');
+    } else if (gameMode === 'online') {
+        currentTurn = 'player';
+        updateStatus('Starting online game...');
     }
     updateBoardSize();
     renderBoard();
@@ -1041,6 +1174,10 @@ function resetGame(preserveMode = false) {
 //  New Game button
 // ------------------------------------------------------------------
 document.getElementById('reset-btn').addEventListener('click', () => {
+    if (gameMode === 'online') {
+        leaveRoom();
+        return;
+    }
     gameMode = null;
     showMenu();
     initBoard();
@@ -1049,30 +1186,379 @@ document.getElementById('reset-btn').addEventListener('click', () => {
 });
 
 // ------------------------------------------------------------------
+//  Menu buttons (existing)
+// ------------------------------------------------------------------
+document.getElementById('btn-vs-computer').addEventListener('click', () => {
+    gameMode = 'computer';
+    hideMenu();
+    flipCoin((side) => {
+        playerSide = side;
+        aiSide = (side === 'white') ? 'black' : 'white';
+        setTimeout(() => {
+            coinOverlay.classList.add('hidden');
+            resetGame(true);
+        }, 400);
+    });
+});
+
+document.getElementById('btn-vs-human').addEventListener('click', () => {
+    gameMode = 'human';
+    playerSide = 'white';
+    hideMenu();
+    resetGame(true);
+});
+
+// ------------------------------------------------------------------
+//  ONLINE MODE: Firebase functions
+// ------------------------------------------------------------------
+
+// Open the lobby
+function openLobby() {
+    lobbyOverlay.classList.remove('hidden');
+    // Remove old listener if any
+    if (_gameListener) {
+        _gameListener.off();
+        _gameListener = null;
+    }
+    _gameListener = db.ref('games');
+    _gameListener.on('value', (snapshot) => {
+        const games = [];
+        snapshot.forEach((child) => {
+            const data = child.val();
+            // Only show waiting games (not ready/playing/finished)
+            if (data.status === 'waiting') {
+                games.push({
+                    id: child.key,
+                    host: data.host || 'Unknown',
+                    guest: data.guest || null,
+                    players: data.guest ? 2 : 1,
+                    status: data.status,
+                    password: data.password || ''
+                });
+            }
+        });
+        renderGameList(games);
+    });
+}
+
+function renderGameList(games) {
+    gameListEl.innerHTML = '';
+    if (games.length === 0) {
+        gameListEl.innerHTML = '<p style="color: var(--wood-lightest); opacity:0.6;">No games available. Create one!</p>';
+        lobbyStatus.textContent = 'No games found.';
+        return;
+    }
+    lobbyStatus.textContent = `${games.length} game(s) available.`;
+    for (const game of games) {
+        const card = document.createElement('div');
+        card.className = 'game-card';
+        const info = document.createElement('div');
+        info.className = 'game-info';
+        const guestDisplay = game.guest ? game.guest : 'Waiting...';
+        info.innerHTML = `
+            <div class="game-id">${game.id}</div>
+            <div class="game-players">👤 ${game.host} &nbsp;|&nbsp; 👤 ${guestDisplay}</div>
+        `;
+        const joinBtn = document.createElement('button');
+        joinBtn.className = 'join-btn';
+        const isFull = game.players >= 2;
+        joinBtn.textContent = isFull ? 'Full' : 'Join';
+        joinBtn.disabled = isFull;
+        joinBtn.addEventListener('click', () => {
+            if (!isFull) {
+                const password = window.prompt(`Enter password for game ${game.id}:`);
+                if (password === null) return;
+                joinGame(game.id, password);
+            }
+        });
+        card.appendChild(info);
+        card.appendChild(joinBtn);
+        gameListEl.appendChild(card);
+    }
+}
+
+// Create a new game with password
+function createGame(password) {
+    // Show loading state
+    lobbyStatus.textContent = 'Creating game...';
+    const createBtn = document.getElementById('lobby-create-btn');
+    createBtn.disabled = true;
+
+    const newGameRef = db.ref('games').push();
+    const gameId = newGameRef.key;
+    const hostName = 'Host';
+    const initialBoard = boardToString(getInitialBoardArray());
+
+    newGameRef.set({
+        host: hostName,
+        guest: null,
+        password: password,
+        status: 'waiting',
+        board: initialBoard,
+        currentTurn: 'white',
+        moveCount: 0,
+        winner: null,
+        gameOver: false,
+        sides: { host: null, guest: null }
+    }).then(() => {
+        console.log('✅ Game created successfully with ID:', gameId);
+        createBtn.disabled = false;
+        // Enter the room immediately
+        enterRoom(gameId, 'host');
+    }).catch((err) => {
+        console.error('❌ Create game error:', err);
+        createBtn.disabled = false;
+        lobbyStatus.textContent = 'Failed to create game.';
+        let msg = 'Failed to create game. ';
+        if (err.code === 'PERMISSION_DENIED') {
+            msg += 'Firebase permission denied. Please set database rules to { ".read": true, ".write": true } in the Firebase Console -> Realtime Database -> Rules.';
+        } else {
+            msg += err.message;
+        }
+        alert(msg);
+    });
+}
+
+// Helper to get initial board as array
+function getInitialBoardArray() {
+    const b = Array.from({ length: SIZE }, () => Array(SIZE).fill(EMPTY));
+    b[CENTER][CENTER] = KING;
+    const defenderPositions = [
+        [CENTER, CENTER-1], [CENTER, CENTER+1],
+        [CENTER-1, CENTER], [CENTER+1, CENTER],
+        [CENTER, CENTER-2], [CENTER, CENTER+2],
+        [CENTER-2, CENTER], [CENTER+2, CENTER],
+        [CENTER-1, CENTER-1], [CENTER-1, CENTER+1],
+        [CENTER+1, CENTER-1], [CENTER+1, CENTER+1]
+    ];
+    for (const [r, c] of defenderPositions) b[r][c] = DEFENDER;
+    for (let c = 3; c <= 7; c++) b[0][c] = ATTACKER;
+    b[1][5] = ATTACKER;
+    for (let c = 3; c <= 7; c++) b[10][c] = ATTACKER;
+    b[9][5] = ATTACKER;
+    for (let r = 3; r <= 7; r++) b[r][0] = ATTACKER;
+    b[5][1] = ATTACKER;
+    for (let r = 3; r <= 7; r++) b[r][10] = ATTACKER;
+    b[5][9] = ATTACKER;
+    return b;
+}
+
+// Join an existing game with password
+function joinGame(gameId, password) {
+    const gameRef = db.ref('games/' + gameId);
+    gameRef.once('value').then((snapshot) => {
+        const data = snapshot.val();
+        if (!data) {
+            alert('Game does not exist.');
+            return;
+        }
+        if (data.status !== 'waiting') {
+            alert('Game is already full or started.');
+            return;
+        }
+        if (data.password !== password) {
+            alert('Incorrect password.');
+            return;
+        }
+        // Add guest
+        gameRef.update({
+            guest: 'Guest',
+            status: 'ready'
+        }).then(() => {
+            enterRoom(gameId, 'guest');
+        }).catch((err) => {
+            alert('Failed to join game: ' + err.message);
+        });
+    }).catch((err) => {
+        alert('Error joining game: ' + err.message);
+    });
+}
+
+// Enter a room and start listening
+function enterRoom(roomId, role) {
+    onlineRoomId = roomId;
+    onlineRole = role;
+    onlineGameRef = db.ref('games/' + roomId);
+    lobbyOverlay.classList.add('hidden');
+    roomOverlay.classList.remove('hidden');
+    roomGameId.textContent = `Game ID: ${roomId}`;
+    roomStatus.textContent = 'Connecting...';
+    roomMessage.textContent = '';
+
+    // Listen for changes to this game
+    onlineGameRef.on('value', (snapshot) => {
+        const data = snapshot.val();
+        if (!data) {
+            roomStatus.textContent = 'Game was removed.';
+            roomMessage.textContent = 'You will be returned to lobby.';
+            setTimeout(leaveRoom, 2000);
+            return;
+        }
+        // Update room info
+        const hostName = data.host || 'Host';
+        const guestName = data.guest || 'Waiting...';
+        roomPlayers.textContent = `👤 Host: ${hostName}  |  👤 Guest: ${guestName}`;
+        roomStatus.textContent = data.status === 'ready' ? 'Both players ready! Starting...' : 'Waiting for opponent...';
+
+        if (data.status === 'ready' && !onlineGameReady) {
+            onlineGameReady = true;
+            if (role === 'host') {
+                const hostSide = Math.random() < 0.5 ? 'white' : 'black';
+                const guestSide = (hostSide === 'white') ? 'black' : 'white';
+                onlineGameRef.update({
+                    'sides/host': hostSide,
+                    'sides/guest': guestSide,
+                    status: 'playing',
+                    currentTurn: 'white'
+                }).then(() => {
+                    console.log('Sides assigned and game set to playing.');
+                }).catch((err) => {
+                    console.error('Failed to start game:', err);
+                    alert('Failed to start game: ' + err.message);
+                });
+            }
+        }
+
+        if (data.status === 'playing' && data.sides && data.sides.host && data.sides.guest) {
+            const mySide = (role === 'host') ? data.sides.host : data.sides.guest;
+            if (mySide) {
+                if (playerSide !== mySide || !onlineGameReady) {
+                    playerSide = mySide;
+                    onlineGameReady = true;
+                    if (data.board) {
+                        board = stringToBoard(data.board);
+                        moveCount = data.moveCount || 0;
+                        gameOver = data.gameOver || false;
+                        if (gameOver && data.winner) {
+                            showWinOverlay(data.winner);
+                        }
+                    } else {
+                        initBoard();
+                    }
+                    const turn = data.currentTurn || 'white';
+                    if (turn === playerSide) {
+                        currentTurn = 'player';
+                    } else {
+                        currentTurn = 'opponent';
+                    }
+                    roomOverlay.classList.add('hidden');
+                    const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+                    if (currentTurn === 'player') {
+                        updateStatus(`Your turn (${sideName})`);
+                    } else {
+                        updateStatus('Waiting for opponent...', true);
+                    }
+                    renderBoard();
+                }
+            }
+        }
+
+        if (data.status === 'playing' && data.board) {
+            const newBoardStr = data.board;
+            const newTurn = data.currentTurn || 'white';
+            if (boardToString(board) !== newBoardStr) {
+                _updatingFromFirebase = true;
+                board = stringToBoard(newBoardStr);
+                moveCount = data.moveCount || 0;
+                gameOver = data.gameOver || false;
+                if (gameOver && data.winner) {
+                    showWinOverlay(data.winner);
+                }
+                if (newTurn === playerSide) {
+                    currentTurn = 'player';
+                } else {
+                    currentTurn = 'opponent';
+                }
+                renderBoard();
+                const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+                if (currentTurn === 'player') {
+                    updateStatus(`Your turn (${sideName})`);
+                } else {
+                    updateStatus('Waiting for opponent...', true);
+                }
+                _updatingFromFirebase = false;
+            }
+        }
+    });
+
+    onlineGameRef.on('child_removed', () => {
+        leaveRoom();
+    });
+}
+
+function showWinOverlay(winner) {
+    const winTitle = document.getElementById('win-title');
+    const winMessage = document.getElementById('win-message');
+    const winOverlay = document.getElementById('win-overlay');
+    if (winner === 'white') {
+        winTitle.textContent = '🏆 Defenders Win!';
+        winMessage.textContent = 'The King escaped to the corner!';
+    } else if (winner === 'black') {
+        winTitle.textContent = '⚔️ Attackers Win!';
+        winMessage.textContent = 'The King has been captured!';
+    }
+    winOverlay.classList.remove('hidden');
+}
+
+// Leave the room
+function leaveRoom() {
+    if (onlineGameRef) {
+        onlineGameRef.off();
+        onlineGameRef = null;
+    }
+    if (_gameListener) {
+        _gameListener.off();
+        _gameListener = null;
+    }
+    onlineRoomId = null;
+    onlineRole = null;
+    onlineGameReady = false;
+    roomOverlay.classList.add('hidden');
+    gameMode = null;
+    showMenu();
+}
+// ------------------------------------------------------------------
 //  Start
 // ------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', () => {
-    // ---- Update board size on load ----
     updateBoardSize();
     initBoard();
     renderBoard();
     showMenu();
     updateStatus('Choose a game mode');
 
-    // ---- Resize handler ----
     window.addEventListener('resize', () => {
         updateBoardSize();
         if (!menuOverlay.classList.contains('hidden')) return;
         renderBoard();
     });
 
-    // ---- WIN OVERLAY "PLAY AGAIN" BUTTON ----
+    // WIN OVERLAY "PLAY AGAIN" BUTTON
     const winCloseBtn = document.getElementById('win-close-btn');
     if (winCloseBtn) {
         winCloseBtn.addEventListener('click', () => {
             document.getElementById('win-overlay').classList.add('hidden');
-            // Restart with the same mode and side
-            resetGame(true);
+            if (gameMode === 'online') {
+                // Reset the board but stay in online mode (rematch)
+                // We can just reset the board in Firebase
+                if (onlineRoomId) {
+                    const boardStr = boardToString(getInitialBoardArray());
+                    onlineGameRef.update({
+                        board: boardStr,
+                        moveCount: 0,
+                        gameOver: false,
+                        winner: null,
+                        currentTurn: 'white'
+                    });
+                    initBoard();
+                    gameOver = false;
+                    moveCount = 0;
+                    renderBoard();
+                    updateStatus('New game started.');
+                }
+            } else {
+                resetGame(true);
+            }
         });
     }
 });
