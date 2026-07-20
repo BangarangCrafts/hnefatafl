@@ -8,42 +8,76 @@
 </head>
 <body>
     <div id="app">
-        <!-- Menu overlay -->
+        <!-- ========== MENU OVERLAY ========== -->
         <div id="menu-overlay">
             <div id="menu">
                 <h1>Hnefatafl</h1>
                 <p>Choose game mode</p>
                 <button id="btn-vs-computer">🖥️ VS Computer</button>
                 <button id="btn-vs-human">👥 VS Human (Hotseat)</button>
+                <button id="btn-online">🌐 Play Online</button>
             </div>
         </div>
 
-        <!-- Coin flip overlay -->
-<div id="coin-overlay" class="hidden">
-    <div id="coin-container">
-        <div id="coin">
-            <div class="side front">
-                <img src="Defenders.webp" alt="Defenders">
-                <span>Defenders</span>
+        <!-- ========== COIN FLIP OVERLAY ========== -->
+        <div id="coin-overlay" class="hidden">
+            <div id="coin-container">
+                <div id="coin">
+                    <div class="side front">
+                        <img src="Defenders.webp" alt="Defenders" />
+                        <span>Defenders</span>
+                    </div>
+                    <div class="side back">
+                        <img src="Attackers.webp" alt="Attackers" />
+                        <span>Attackers</span>
+                    </div>
+                </div>
             </div>
-            <div class="side back">
-                <img src="Attackers.webp" alt="Attackers">
-                <span>Attackers</span>
+            <p id="coin-result">Flipping…</p>
+        </div>
+
+        <!-- ========== WIN OVERLAY ========== -->
+        <div id="win-overlay" class="hidden">
+            <div id="win-box">
+                <h2 id="win-title">🏆 Winner!</h2>
+                <p id="win-message">Defenders win!</p>
+                <button id="win-close-btn">Play Again</button>
             </div>
         </div>
-    </div>
-    <p id="coin-result">Flipping...</p>
-</div>
-		
-		<!-- Win announcement overlay -->
-<div id="win-overlay" class="hidden">
-    <div id="win-box">
-        <h2 id="win-title">🏆 Winner!</h2>
-        <p id="win-message">Defenders win!</p>
-        <button id="win-close-btn">Play Again</button>
-    </div>
-</div>
 
+        <!-- ========== LOBBY OVERLAY ========== -->
+        <div id="lobby-overlay" class="hidden">
+            <div id="lobby-box">
+                <h2>🌐 Online Lobby</h2>
+                <p id="lobby-status">Loading games…</p>
+                <div id="lobby-actions">
+                    <button id="lobby-create-btn">➕ Create Game</button>
+                    <button id="lobby-refresh-btn">🔄 Refresh</button>
+                    <button id="lobby-back-btn">← Back</button>
+                </div>
+                <div id="game-list">
+                    <!-- game cards injected here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== ROOM OVERLAY ========== -->
+        <div id="room-overlay" class="hidden">
+            <div id="room-box">
+                <h2 id="room-title">🕹️ Game Room</h2>
+                <div id="room-info">
+                    <p id="room-game-id">Game ID: —</p>
+                    <p id="room-players">👤 Host: — &nbsp;|&nbsp; 👤 Guest: —</p>
+                    <p id="room-status">Waiting for players…</p>
+                </div>
+                <div id="room-actions">
+                    <button id="room-leave-btn">🚪 Leave Room</button>
+                </div>
+                <div id="room-message" class="room-message"></div>
+            </div>
+        </div>
+
+        <!-- ========== MAIN GAME UI ========== -->
         <h1 id="game-title">Hnefatafl</h1>
         <div id="status">Your turn (Defenders)</div>
         <div id="board-container">
@@ -51,10 +85,16 @@
         </div>
         <button id="reset-btn">⟳ New Game</button>
         <div id="info">
-            <p><strong>Rules:</strong> Move your King to any corner to win.<br>
-            Attackers win by surrounding the King on all four sides.</p>
+            <p>
+                <strong>Rules:</strong> Move your King to any corner to win.<br />
+                Attackers win by surrounding the King on all four sides.
+            </p>
         </div>
     </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
     <script src="script.js"></script>
 </body>
 </html>
