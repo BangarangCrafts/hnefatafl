@@ -74,6 +74,8 @@ let gameMode = null;              // 'computer', 'human', 'online'
 let playerSide = 'white';         // 'white' (defenders) or 'black' (attackers)
 let aiSide = 'black';
 
+let _gameListener = null; // for lobby listener
+
 let kingHistory = [];
 let predictedCorner = null;
 let kingLeftThrone = false;
@@ -1233,8 +1235,9 @@ function openLobby() {
         _gameListener = null;
     }
 
-    // First, fetch once to show initial list (works even if listener fails)
     const gamesRef = db.ref('games');
+
+    // First, fetch once to show initial list
     gamesRef.once('value').then((snapshot) => {
         const games = [];
         snapshot.forEach((child) => {
@@ -1264,6 +1267,7 @@ function openLobby() {
         const games = [];
         snapshot.forEach((child) => {
             const data = child.val();
+            // Show only waiting games (not ready/playing/finished)
             if (data.status === 'waiting') {
                 games.push({
                     id: child.key,
@@ -1407,11 +1411,14 @@ function joinGame(gameId, password) {
             guest: 'Guest',
             status: 'ready'
         }).then(() => {
+            console.log('✅ Joined game, status set to ready');
             enterRoom(gameId, 'guest');
         }).catch((err) => {
+            console.error('❌ Failed to update game:', err);
             alert('Failed to join game: ' + err.message);
         });
     }).catch((err) => {
+        console.error('❌ Error joining game:', err);
         alert('Error joining game: ' + err.message);
     });
 }
@@ -1427,9 +1434,12 @@ function enterRoom(roomId, role) {
     roomStatus.textContent = 'Connecting...';
     roomMessage.textContent = '';
 
+    console.log(`🔑 Entering room ${roomId} as ${role}`);
+
     // Listen for changes to this game
     onlineGameRef.on('value', (snapshot) => {
         const data = snapshot.val();
+        console.log('📦 Room data update:', data);
         if (!data) {
             roomStatus.textContent = 'Game was removed.';
             roomMessage.textContent = 'You will be returned to lobby.';
@@ -1442,27 +1452,33 @@ function enterRoom(roomId, role) {
         roomPlayers.textContent = `👤 Host: ${hostName}  |  👤 Guest: ${guestName}`;
         roomStatus.textContent = data.status === 'ready' ? 'Both players ready! Starting...' : 'Waiting for opponent...';
 
+        // --- CHECK: if status becomes 'ready' and we are host, assign sides and start ---
         if (data.status === 'ready' && !onlineGameReady) {
+            console.log('🟢 Game is ready, starting...');
             onlineGameReady = true;
             if (role === 'host') {
                 const hostSide = Math.random() < 0.5 ? 'white' : 'black';
                 const guestSide = (hostSide === 'white') ? 'black' : 'white';
+                console.log(`🎲 Assigning sides: Host=${hostSide}, Guest=${guestSide}`);
                 onlineGameRef.update({
                     'sides/host': hostSide,
                     'sides/guest': guestSide,
                     status: 'playing',
                     currentTurn: 'white'
                 }).then(() => {
-                    console.log('Sides assigned and game set to playing.');
+                    console.log('✅ Game set to playing with sides assigned.');
                 }).catch((err) => {
-                    console.error('Failed to start game:', err);
+                    console.error('❌ Failed to start game:', err);
                     alert('Failed to start game: ' + err.message);
                 });
             }
+            // If guest, they just wait for host to set playing
         }
 
+        // --- If status is 'playing' and sides are assigned, start the game on our side ---
         if (data.status === 'playing' && data.sides && data.sides.host && data.sides.guest) {
             const mySide = (role === 'host') ? data.sides.host : data.sides.guest;
+            console.log(`🎮 Playing state. My side: ${mySide}`);
             if (mySide) {
                 if (playerSide !== mySide || !onlineGameReady) {
                     playerSide = mySide;
@@ -1491,14 +1507,17 @@ function enterRoom(roomId, role) {
                         updateStatus('Waiting for opponent...', true);
                     }
                     renderBoard();
+                    console.log('🎮 Game started on client.');
                 }
             }
         }
 
+        // --- If board changes (opponent moved) update local board ---
         if (data.status === 'playing' && data.board) {
             const newBoardStr = data.board;
             const newTurn = data.currentTurn || 'white';
             if (boardToString(board) !== newBoardStr) {
+                console.log('🔄 Opponent move detected, updating board.');
                 _updatingFromFirebase = true;
                 board = stringToBoard(newBoardStr);
                 moveCount = data.moveCount || 0;
@@ -1524,6 +1543,7 @@ function enterRoom(roomId, role) {
     });
 
     onlineGameRef.on('child_removed', () => {
+        console.log('🗑️ Game removed from Firebase.');
         leaveRoom();
     });
 }
