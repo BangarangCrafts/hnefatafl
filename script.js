@@ -1415,7 +1415,6 @@ function enterRoom(roomId, role, onReadyCallback) {
 
     console.log(`🔑 Entering room ${roomId} as ${role}`);
 
-    // For guest, call the callback after a short delay to ensure listener is attached
     if (role === 'guest' && typeof onReadyCallback === 'function') {
         setTimeout(onReadyCallback, 300);
     }
@@ -1435,48 +1434,53 @@ function enterRoom(roomId, role, onReadyCallback) {
         roomPlayers.textContent = `👤 Host: ${hostName}  |  👤 Guest: ${guestName}`;
         roomStatus.textContent = data.status === 'ready' ? 'Both players ready! Starting...' : 'Waiting for opponent...';
 
-        // If status is 'ready' and we are the host, assign sides and set playing
-        if (data.status === 'ready' && !onlineGameReady && role === 'host') {
-            onlineGameReady = true;
+        // ------------------------------------------------------------------
+        // 1. HOST: when status becomes 'ready', assign sides and start game
+        // ------------------------------------------------------------------
+        if (data.status === 'ready' && role === 'host' && !onlineGameReady) {
+            console.log('🎲 Host: assigning sides...');
             const hostSide = Math.random() < 0.5 ? 'white' : 'black';
             const guestSide = (hostSide === 'white') ? 'black' : 'white';
-            console.log(`🎲 Assigning: Host=${hostSide}, Guest=${guestSide}`);
             onlineGameRef.update({
                 'sides/host': hostSide,
                 'sides/guest': guestSide,
                 status: 'playing',
-                currentTurn: 'white'
+                currentTurn: 'white',
+                gameOver: false,
+                winner: null
             }).then(() => {
-                console.log('✅ Game set to playing.');
+                console.log('✅ Game started by host.');
             }).catch((err) => {
-                console.error('❌ Failed to start:', err);
+                console.error('❌ Failed to start game:', err);
                 alert('Failed to start game: ' + err.message);
             });
         }
 
-        // If status is 'playing' and sides assigned, start the game
+        // ------------------------------------------------------------------
+        // 2. When status is 'playing' and sides are assigned → start the client
+        // ------------------------------------------------------------------
         if (data.status === 'playing' && data.sides && data.sides.host && data.sides.guest) {
             const mySide = (role === 'host') ? data.sides.host : data.sides.guest;
-            if (mySide && (playerSide !== mySide || !onlineGameReady)) {
+            if (!mySide) return;
+
+            // If we haven't started this client, or the side changed, start/restart
+            if (!onlineGameReady || playerSide !== mySide) {
+                console.log(`🎮 Starting game for ${role} as ${mySide}`);
                 playerSide = mySide;
                 onlineGameReady = true;
-                // Load board from Firebase
+
+                // Load board from Firebase (or use initial if missing)
                 if (data.board) {
                     board = stringToBoard(data.board);
                     moveCount = data.moveCount || 0;
-                    gameOver = data.gameOver || false;
-                    if (gameOver && data.winner) {
-                        showWinOverlay(data.winner);
-                    }
                 } else {
                     initBoard();
                 }
+
+                gameOver = data.gameOver || false;
                 const turn = data.currentTurn || 'white';
-                if (turn === playerSide) {
-                    currentTurn = 'player';
-                } else {
-                    currentTurn = 'opponent';
-                }
+                currentTurn = (turn === playerSide) ? 'player' : 'opponent';
+
                 // Hide room overlay and show board
                 roomOverlay.classList.add('hidden');
                 const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
@@ -1486,23 +1490,46 @@ function enterRoom(roomId, role, onReadyCallback) {
                     updateStatus('Waiting for opponent...', true);
                 }
                 renderBoard();
-                console.log('🎮 Game started on client.');
+
+                // If game is not over, hide any lingering win overlay
+                if (!gameOver) {
+                    hideWinOverlay();
+                } else if (data.winner) {
+                    showWinOverlay(data.winner);
+                }
+                console.log('✅ Game board is now visible.');
+            } else {
+                // Already started – just sync board and turn (handled below)
             }
         }
 
-        // Board sync from opponent
-        if (data.status === 'playing' && data.board) {
+        // ------------------------------------------------------------------
+        // 3. Sync board changes (including game over detection)
+        // ------------------------------------------------------------------
+        if (data.status === 'playing' && data.board && onlineGameReady) {
             const newBoardStr = data.board;
             const newTurn = data.currentTurn || 'white';
+            const isGameOver = data.gameOver || false;
+            const winner = data.winner || null;
+
+            // --- Game Over check ---
+            if (isGameOver && winner) {
+                showWinOverlay(winner);
+                gameOver = true;
+            } else {
+                // Game is not over – hide overlay and reset gameOver flag
+                hideWinOverlay();
+                gameOver = false;
+            }
+
+            // --- Update board if changed ---
             if (boardToString(board) !== newBoardStr) {
-                console.log('🔄 Opponent move, updating board.');
+                console.log('🔄 Board update from Firebase');
                 _updatingFromFirebase = true;
                 board = stringToBoard(newBoardStr);
                 moveCount = data.moveCount || 0;
-                gameOver = data.gameOver || false;
-                if (gameOver && data.winner) {
-                    showWinOverlay(data.winner);
-                }
+
+                // Update turn
                 if (newTurn === playerSide) {
                     currentTurn = 'player';
                 } else {
@@ -1516,10 +1543,25 @@ function enterRoom(roomId, role, onReadyCallback) {
                     updateStatus('Waiting for opponent...', true);
                 }
                 _updatingFromFirebase = false;
+            } else {
+                // Board unchanged – still update turn if needed
+                if (newTurn === playerSide) {
+                    currentTurn = 'player';
+                } else {
+                    currentTurn = 'opponent';
+                }
+                // Update status text (optional)
+                const sideName = (playerSide === 'white') ? 'Defenders' : 'Attackers';
+                if (currentTurn === 'player') {
+                    updateStatus(`Your turn (${sideName})`);
+                } else {
+                    updateStatus('Waiting for opponent...', true);
+                }
             }
         }
     });
 
+    // Clean up when room is deleted
     onlineGameRef.on('child_removed', () => {
         console.log('🗑️ Game removed.');
         leaveRoom();
@@ -1588,6 +1630,13 @@ function refreshGameList() {
         console.error('❌ Refresh error:', err);
         lobbyStatus.textContent = 'Refresh failed. Check console.';
     });
+}
+
+// ------------------------------------------------------------------
+//  Hide win overlay
+// ------------------------------------------------------------------
+function hideWinOverlay() {
+    document.getElementById('win-overlay').classList.add('hidden');
 }
 
 // ------------------------------------------------------------------
