@@ -47,6 +47,15 @@ db.ref('.info/connected').on('value', (snap) => {
     }
 });
 
+// Test Firebase connection and log the database URL being used
+db.ref('.info/connected').on('value', (snap) => {
+    if (snap.val() === true) {
+        console.log('✅ Firebase connected to:', firebaseConfig.databaseURL);
+    } else {
+        console.warn('⚠️ Firebase disconnected');
+    }
+});
+
 
 // ------------------------------------------------------------------
 //  Global state
@@ -1215,17 +1224,21 @@ document.getElementById('btn-vs-human').addEventListener('click', () => {
 // Open the lobby
 function openLobby() {
     lobbyOverlay.classList.remove('hidden');
-    // Remove old listener if any
+    lobbyStatus.textContent = 'Loading games...';
+    gameListEl.innerHTML = '<p style="color: var(--wood-lightest); opacity:0.6;">Loading...</p>';
+
+    // Remove any old listener
     if (_gameListener) {
         _gameListener.off();
         _gameListener = null;
     }
-    _gameListener = db.ref('games');
-    _gameListener.on('value', (snapshot) => {
+
+    // First, fetch once to show initial list (works even if listener fails)
+    const gamesRef = db.ref('games');
+    gamesRef.once('value').then((snapshot) => {
         const games = [];
         snapshot.forEach((child) => {
             const data = child.val();
-            // Only show waiting games (not ready/playing/finished)
             if (data.status === 'waiting') {
                 games.push({
                     id: child.key,
@@ -1238,6 +1251,35 @@ function openLobby() {
             }
         });
         renderGameList(games);
+        console.log('✅ Lobby loaded once, found', games.length, 'games');
+    }).catch((err) => {
+        console.error('❌ Error loading games once:', err);
+        lobbyStatus.textContent = 'Error loading games. Check console.';
+        gameListEl.innerHTML = '<p style="color: #ff6b6b;">Failed to load games. Check console and Firebase rules.</p>';
+    });
+
+    // Then set up real-time listener for updates
+    _gameListener = gamesRef;
+    _gameListener.on('value', (snapshot) => {
+        const games = [];
+        snapshot.forEach((child) => {
+            const data = child.val();
+            if (data.status === 'waiting') {
+                games.push({
+                    id: child.key,
+                    host: data.host || 'Unknown',
+                    guest: data.guest || null,
+                    players: data.guest ? 2 : 1,
+                    status: data.status,
+                    password: data.password || ''
+                });
+            }
+        });
+        renderGameList(games);
+        console.log('🔄 Lobby listener updated, found', games.length, 'games');
+    }, (error) => {
+        console.error('❌ Lobby listener error:', error);
+        lobbyStatus.textContent = 'Listener error. Check console.';
     });
 }
 
@@ -1517,6 +1559,35 @@ function leaveRoom() {
     gameMode = null;
     showMenu();
 }
+
+// Refresh the game list manually (useful for the refresh button)
+function refreshGameList() {
+    lobbyStatus.textContent = 'Refreshing...';
+    const gamesRef = db.ref('games');
+    gamesRef.once('value').then((snapshot) => {
+        const games = [];
+        snapshot.forEach((child) => {
+            const data = child.val();
+            if (data.status === 'waiting') {
+                games.push({
+                    id: child.key,
+                    host: data.host || 'Unknown',
+                    guest: data.guest || null,
+                    players: data.guest ? 2 : 1,
+                    status: data.status,
+                    password: data.password || ''
+                });
+            }
+        });
+        renderGameList(games);
+        lobbyStatus.textContent = `Refreshed: ${games.length} game(s) available.`;
+        console.log('🔄 Manual refresh found', games.length, 'games');
+    }).catch((err) => {
+        console.error('❌ Refresh error:', err);
+        lobbyStatus.textContent = 'Refresh failed. Check console.';
+    });
+}
+
 // ------------------------------------------------------------------
 //  Start
 // ------------------------------------------------------------------
